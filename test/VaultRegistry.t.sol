@@ -30,7 +30,7 @@ contract VaultRegistryTest is Test {
         user = makeAddr("user");
         heir = makeAddr("heir");
         stranger = makeAddr("stranger");
-        vm.deal(user, 100 ether);
+        vm.deal(user, 1000 ether);
 
         vm.prank(address(this));
         factory.setVaultRegistry(address(registry));
@@ -41,15 +41,22 @@ contract VaultRegistryTest is Test {
         return active;
     }
 
+    function _createSingleHeirVault(uint256 value) internal returns (address) {
+        address[] memory heirs = new address[](1);
+        uint256[] memory percentages = new uint256[](1);
+        heirs[0] = heir;
+        percentages[0] = 10000;
+        
+        return factory.createVault{value: value}(heirs, percentages, PERIOD, 0);
+    }
+
     function test_AutoRegister_OnVaultCreation() public {
         vm.prank(user);
 
-        // address[] memory expectedHeirs = new address[](1);
-        // expectedHeirs[0] = heir;
         vm.expectEmit(false, true, false, true);
         emit VaultRegistered(address(0), user);
 
-        address vault = factory.createVault{value: 1 ether}(heir, PERIOD);
+        address vault = _createSingleHeirVault(1 ether);
 
         assertTrue(_isActive(vault));
         assertEq(registry.getTotalVaults(), 1);
@@ -57,7 +64,7 @@ contract VaultRegistryTest is Test {
 
     function test_ManualRegister_ByOwner() public {
         vm.startPrank(user);
-        address vault = factory.createVault{value: 1 ether}(heir, PERIOD);
+        address vault = _createSingleHeirVault(1 ether);
         vm.stopPrank();
 
         vm.prank(user);
@@ -75,7 +82,7 @@ contract VaultRegistryTest is Test {
 
     function test_RevertRegister_NotFactoryOrOwner() public {
         vm.startPrank(user);
-        address vault = factory.createVault{value: 1 ether}(heir, PERIOD);
+        address vault = _createSingleHeirVault(1 ether);
         vm.stopPrank();
 
         vm.prank(user);
@@ -89,7 +96,7 @@ contract VaultRegistryTest is Test {
 
     function test_UnregisterVault() public {
         vm.startPrank(user);
-        address vault = factory.createVault{value: 1 ether}(heir, PERIOD);
+        address vault = _createSingleHeirVault(1 ether);
         vm.stopPrank();
 
         assertTrue(_isActive(vault));
@@ -105,22 +112,20 @@ contract VaultRegistryTest is Test {
 
     function test_Checker_NoneReady() public {
         vm.startPrank(user);
-        factory.createVault{value: 1 ether}(heir, PERIOD);
-        factory.createVault{value: 1 ether}(heir, PERIOD);
+        _createSingleHeirVault(1 ether);
+        _createSingleHeirVault(1 ether);
         vm.stopPrank();
 
-        // Gelato checker
         (bool canExec,) = registry.checker();
         assertFalse(canExec);
     }
 
     function test_Checker_OneReady() public {
         vm.prank(user);
-        address vault = factory.createVault{value: 1 ether}(heir, PERIOD);
+        address vault = _createSingleHeirVault(1 ether);
 
         vm.warp(block.timestamp + PERIOD + 1);
 
-        // Gelato checker
         (bool canExec, bytes memory payload) = registry.checker();
         assertTrue(canExec);
 
@@ -131,16 +136,15 @@ contract VaultRegistryTest is Test {
 
     function test_ExecuteBatch_One() public {
         vm.prank(user);
-        address vault = factory.createVault{value: 1 ether}(heir, PERIOD);
+        address vault = _createSingleHeirVault(1 ether);
 
         vm.warp(block.timestamp + PERIOD + 1);
 
-        // 1. Check
         (bool canExec, bytes memory payload) = registry.checker();
         assertTrue(canExec);
 
         uint256 vaultBalance = address(vault).balance;
-        uint256 expectedFee = (vaultBalance * 20) / 10000; // 0.2%
+        uint256 expectedFee = (vaultBalance * 20) / 10000;
 
         vm.expectEmit(true, true, false, true);
         emit VaultDistributed(vault, expectedFee);
@@ -148,10 +152,8 @@ contract VaultRegistryTest is Test {
         uint256 heirBalanceBefore = heir.balance;
         uint256 registryBalanceBefore = address(registry).balance;
 
-        // 2. Decode Payload
         (address[] memory vaultsToExec, uint256 nextIndex) = abi.decode(payload, (address[], uint256));
 
-        // 3. Execute (Simulate Gelato)
         registry.executeBatch(vaultsToExec, nextIndex);
 
         NatecinVault v = NatecinVault(payable(vault));
@@ -165,8 +167,8 @@ contract VaultRegistryTest is Test {
 
     function test_ExecuteBatch_MultipleVaults() public {
         vm.startPrank(user);
-        address v1 = factory.createVault{value: 1 ether}(heir, PERIOD);
-        address v2 = factory.createVault{value: 2 ether}(heir, PERIOD);
+        address v1 = _createSingleHeirVault(1 ether);
+        address v2 = _createSingleHeirVault(2 ether);
         vm.stopPrank();
 
         vm.warp(block.timestamp + PERIOD + 1);
@@ -174,38 +176,32 @@ contract VaultRegistryTest is Test {
         uint256 heirBalanceBefore = heir.balance;
         uint256 registryBalanceBefore = address(registry).balance;
 
-        // 1. Check
         (bool canExec, bytes memory payload) = registry.checker();
         assertTrue(canExec);
 
-        // 2. Decode
         (address[] memory vaultsToExec, uint256 nextIndex) = abi.decode(payload, (address[], uint256));
 
-        // 3. Execute
         registry.executeBatch(vaultsToExec, nextIndex);
 
         assertFalse(_isActive(v1));
         assertFalse(_isActive(v2));
 
-        // Calculate total received (original minus creation fees minus distribution fees)
         assertGt(heir.balance, heirBalanceBefore);
         assertGt(address(registry).balance, registryBalanceBefore);
     }
 
     function test_Manual_ExecuteBatch_ByAnyone() public {
         vm.prank(user);
-        address vault = factory.createVault{value: 1 ether}(heir, PERIOD);
+        address vault = _createSingleHeirVault(1 ether);
 
         vm.warp(block.timestamp + PERIOD + 1);
 
         address[] memory targets = new address[](1);
         targets[0] = vault;
 
-        // Simulate a random user (or Gelato executor) calling executeBatch
         address randomUser = makeAddr("random");
         vm.prank(randomUser);
 
-        // Directly call executeBatch (no encoding needed here, unlike performUpkeep)
         registry.executeBatch(targets, 0);
 
         NatecinVault v = NatecinVault(payable(vault));
@@ -214,7 +210,7 @@ contract VaultRegistryTest is Test {
     }
 
     function test_SetDistributionFee() public {
-        uint256 newFee = 30; // 0.3%
+        uint256 newFee = 30;
 
         vm.prank(address(this));
         registry.setDistributionFee(newFee);
@@ -223,7 +219,7 @@ contract VaultRegistryTest is Test {
     }
 
     function test_Revert_SetDistributionFee_TooHigh() public {
-        uint256 tooHighFee = 600; // 6% (max is 5%)
+        uint256 tooHighFee = 600;
 
         vm.prank(address(this));
         vm.expectRevert(VaultRegistry.InvalidFeePercent.selector);
@@ -231,15 +227,13 @@ contract VaultRegistryTest is Test {
     }
 
     function test_WithdrawFees() public {
-        // 1. Setup a dedicated collector address
         address collector = makeAddr("collector");
 
-        // 2. Update the registry to use this collector
         vm.prank(address(this));
         registry.setFeeCollector(collector);
 
         vm.prank(user);
-        address vault = factory.createVault{value: 10 ether}(heir, PERIOD);
+        address vault = _createSingleHeirVault(10 ether);
 
         vm.warp(block.timestamp + PERIOD + 1);
 
@@ -256,7 +250,6 @@ contract VaultRegistryTest is Test {
         vm.prank(address(this));
         registry.withdrawFees();
 
-        // 3. Assert against the specific collector address
         assertEq(collector.balance, collectorBalanceBefore + registryBalance);
         assertEq(address(registry).balance, 0);
     }
@@ -275,7 +268,7 @@ contract VaultRegistryTest is Test {
         registry.setDistributionFee(0);
 
         vm.prank(user);
-        address vault = factory.createVault{value: 5 ether}(heir, PERIOD);
+        address vault = _createSingleHeirVault(5 ether);
 
         vm.warp(block.timestamp + PERIOD + 1);
 
@@ -299,7 +292,7 @@ contract VaultRegistryTest is Test {
 
     function test_Revert_RegisterVault_AlreadyRegistered() public {
         vm.prank(user);
-        address vault = factory.createVault{value: 1 ether}(heir, PERIOD);
+        address vault = _createSingleHeirVault(1 ether);
 
         vm.prank(user);
         vm.expectRevert(abi.encodeWithSelector(VaultRegistry.AlreadyRegistered.selector));
@@ -316,7 +309,7 @@ contract VaultRegistryTest is Test {
 
     function test_Revert_UnregisterVault_Unauthorized() public {
         vm.prank(user);
-        address vault = factory.createVault{value: 1 ether}(heir, PERIOD);
+        address vault = _createSingleHeirVault(1 ether);
 
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(VaultRegistry.Unauthorized.selector));
@@ -364,11 +357,56 @@ contract VaultRegistryTest is Test {
 
     function test_GetVaultInfo() public {
         vm.prank(user);
-        address vault = factory.createVault{value: 1 ether}(heir, PERIOD);
+        address vault = _createSingleHeirVault(1 ether);
 
         (address vaultOwner, bool active) = registry.getVaultInfo(vault);
         
         assertEq(vaultOwner, user);
         assertTrue(active);
+    }
+
+    function test_Checker_BatchLimit() public {
+        vm.startPrank(user);
+        for(uint i = 0; i < 25; i++) {
+            _createSingleHeirVault(1 ether);
+        }
+        vm.stopPrank();
+
+        vm.warp(block.timestamp + PERIOD + 1);
+
+        (bool canExec, bytes memory payload) = registry.checker();
+        assertTrue(canExec, "Should be executable");
+
+        (address[] memory list, uint256 nextIndex) = abi.decode(payload, (address[], uint256));
+        
+        assertEq(list.length, 20, "Should be capped at batch size 20");
+        assertEq(nextIndex, 20, "Next index should be 20");
+
+        registry.executeBatch(list, nextIndex);
+
+        (bool canExec2, bytes memory payload2) = registry.checker();
+        assertTrue(canExec2, "Should have more vaults to process");
+
+        (address[] memory list2, ) = abi.decode(payload2, (address[], uint256));
+
+        assertEq(list2.length, 5, "Should return remaining 5 vaults");
+    }
+
+    function test_Unregister_MaintainsIntegrity() public {
+        vm.startPrank(user);
+        address v1 = _createSingleHeirVault(1 ether);
+        address v2 = _createSingleHeirVault(1 ether);
+        address v3 = _createSingleHeirVault(1 ether);
+        vm.stopPrank();
+
+        vm.prank(user);
+        registry.unregisterVault(v2);
+
+        assertEq(registry.getTotalVaults(), 2, "Total vaults should be 2");
+
+        address[] memory remaining = registry.getVaults(0, 2);
+        
+        assertEq(remaining[0], v1, "Index 0 should be v1");
+        assertEq(remaining[1], v3, "Index 1 should be v3 (swapped)");
     }
 }
