@@ -20,6 +20,7 @@ contract NatecinVaultTest is Test {
 
     address public owner;
     address public heir;
+    address public heir2;
     address public stranger;
 
     uint256 public constant INITIAL_ETH = 10 ether;
@@ -27,7 +28,6 @@ contract NatecinVaultTest is Test {
     uint256 public constant NFT_FEE = 0.001 ether;
 
     event VaultCreated(address indexed owner, address[] heirs, uint256[] percentages, uint256 inactivityPeriod, uint256 timestamp);
-
     event ActivityUpdated(uint256 newTimestamp);
     event HeirUpdated(address[] oldHeirs, address[] newHeirs, uint256[] newPercentages, uint256 timestamp);
     event ETHDeposited(address indexed from, uint256 amount);
@@ -36,15 +36,12 @@ contract NatecinVaultTest is Test {
     function setUp() public {
         factory = new NatecinFactory();
 
-        // --- FIX START: Deploy and link Registry ---
-        // We define 'registry' locally here because the test contract
-        // doesn't have a state variable for it, but the Factory needs it.
         registry = new VaultRegistry(address(factory));
         factory.setVaultRegistry(address(registry));
-        // --- FIX END ---
 
         owner = makeAddr("owner");
         heir = makeAddr("heir");
+        heir2 = makeAddr("heir2");
         stranger = makeAddr("stranger");
 
         vm.deal(owner, 100 ether);
@@ -58,8 +55,13 @@ contract NatecinVaultTest is Test {
         nft.mint(owner, 2);
         multiToken.mint(owner, 1, 100, "");
 
+        address[] memory heirs = new address[](1);
+        uint256[] memory percentages = new uint256[](1);
+        heirs[0] = heir;
+        percentages[0] = 10000;
+
         vm.prank(owner);
-        address vaultAddr = factory.createVault{value: INITIAL_ETH}(heir, INACTIVITY_PERIOD);
+        address vaultAddr = factory.createVault{value: INITIAL_ETH}(heirs, percentages, INACTIVITY_PERIOD, 0);
         vault = NatecinVault(payable(vaultAddr));
     }
 
@@ -68,8 +70,7 @@ contract NatecinVaultTest is Test {
         assertEq(vault.getHeirs()[0], heir);
         assertEq(vault.inactivityPeriod(), INACTIVITY_PERIOD);
 
-        // Account for creation fee
-        uint256 expectedBalance = INITIAL_ETH - ((INITIAL_ETH * 40) / 10000);
+        uint256 expectedBalance = INITIAL_ETH - ((INITIAL_ETH * 20) / 10000); // 0.2%
         assertEq(address(vault).balance, expectedBalance);
 
         assertFalse(vault.executed());
@@ -114,14 +115,12 @@ contract NatecinVaultTest is Test {
 
         vm.startPrank(owner);
         assertEq(vault.owner(), owner, "Owner check before test");
-        address[] memory oldHeirs = vault.getHeirs();
+        
         address[] memory newHeirs = new address[](1);
         uint256[] memory newPercentages = new uint256[](1);
         newHeirs[0] = newHeir;
-        newPercentages[0] = 10000; // 100%
+        newPercentages[0] = 10000;
 
-        // vm.expectEmit(true, true, true, true);
-        // emit HeirUpdated(oldHeirs, newHeirs, newPercentages, block.timestamp);
         vault.setHeirs(newHeirs, newPercentages);
         vm.stopPrank();
 
@@ -133,7 +132,7 @@ contract NatecinVaultTest is Test {
         address[] memory newHeirs = new address[](1);
         uint256[] memory newPercentages = new uint256[](1);
         newHeirs[0] = address(0);
-        newPercentages[0] = 10000; // 100%
+        newPercentages[0] = 10000;
         
         vm.expectRevert(NatecinVault.ZeroAddress.selector);
         vault.setHeirs(newHeirs, newPercentages);
@@ -144,7 +143,7 @@ contract NatecinVaultTest is Test {
         address[] memory newHeirs = new address[](1);
         uint256[] memory newPercentages = new uint256[](1);
         newHeirs[0] = newHeir;
-        newPercentages[0] = 10000; // 100%
+        newPercentages[0] = 10000;
         
         vm.prank(stranger);
         vm.expectRevert(NatecinVault.Unauthorized.selector);
@@ -207,10 +206,8 @@ contract NatecinVaultTest is Test {
 
         uint256 beforeBal = heir.balance;
 
-        // Note: Fee amount in event will be 0 if registry doesn't respond
         vault.distributeAssets();
 
-        // Heir should receive vault balance (fees handled by registry if connected)
         assertGt(heir.balance, beforeBal);
         assertTrue(vault.executed());
     }
@@ -225,10 +222,7 @@ contract NatecinVaultTest is Test {
 
         multiToken.setApprovalForAll(address(vault), true);
         vault.depositERC1155(address(multiToken), 1, 50, "");
-        vm.stopPrank();
 
-        // Top up fee for NFTs since vault created with 0 NFTs
-        vm.prank(owner);
         vm.deal(owner, 1 ether);
         vault.topUpFeeDeposit{value: 0.01 ether}();
         vm.stopPrank();
@@ -236,19 +230,11 @@ contract NatecinVaultTest is Test {
         vm.warp(block.timestamp + INACTIVITY_PERIOD + 1);
         vault.distributeAssets();
 
-        // Check token balance distribution (accounting for fees)
         uint256 tokenBalance = token.balanceOf(heir);
 
-        // Should receive slightly less due to 0.4% fee
         assertLt(tokenBalance, 100 ether);
-        assertGt(tokenBalance, 99 ether); // Should be more than 99 ether
+        assertGt(tokenBalance, 99 ether);
 
-        // Should receive slightly less due to 0.4% fee
-        assertLt(tokenBalance, 100 ether);
-        assertGt(tokenBalance, 99 ether); // Should be more than 99 ether
-
-        assertEq(nft.ownerOf(1), heir);
-        assertEq(multiToken.balanceOf(heir, 1), 50);
         assertEq(nft.ownerOf(1), heir);
         assertEq(multiToken.balanceOf(heir, 1), 50);
     }
@@ -311,7 +297,7 @@ contract NatecinVaultTest is Test {
         assertEq(_owner, owner);
         assertEq(_heirs.length, 1);
         assertEq(_heirs[0], heir);
-        assertEq(_percentages[0], 10000); // 100%
+        assertEq(_percentages[0], 10000);
         assertEq(_inactivityPeriod, INACTIVITY_PERIOD);
         assertEq(_lastActiveTimestamp, block.timestamp);
         assertFalse(_executed);
@@ -324,32 +310,31 @@ contract NatecinVaultTest is Test {
     }
 
     function test_NFTFeeCollection() public {
-        // Create a new vault with NFT fee requirement
         uint256 estimatedNFTs = 2;
         uint256 requiredFee = factory.calculateMinNFTFee(estimatedNFTs);
 
+        address[] memory heirs = new address[](1);
+        uint256[] memory percentages = new uint256[](1);
+        heirs[0] = heir;
+        percentages[0] = 10000;
+
         vm.prank(owner);
-        address nftVault = factory.createVault{value: 2 ether + requiredFee}(heir, INACTIVITY_PERIOD, estimatedNFTs);
+        address nftVault = factory.createVault{value: 2 ether + requiredFee}(heirs, percentages, INACTIVITY_PERIOD, estimatedNFTs);
 
         NatecinVault vaultWithNFT = NatecinVault(payable(nftVault));
 
-        // Deposit NFTs
         vm.startPrank(owner);
         nft.safeTransferFrom(owner, nftVault, 1);
         nft.safeTransferFrom(owner, nftVault, 2);
 
-        // Verify NFT fee tracking
         assertTrue(vaultWithNFT.hasNonFungibleAssets());
         assertEq(vaultWithNFT.feeRequired(), requiredFee);
 
-        // Fast forward past inactivity period
         vm.warp(block.timestamp + INACTIVITY_PERIOD + 1);
 
-        // Check fee calculation
         uint256 expectedNFTFee = vaultWithNFT.calculateNFTFee();
         assertGt(expectedNFTFee, 0);
 
-        // Test distribution with NFT fee deduction
         uint256 heirBalanceBefore = heir.balance;
         uint256 registryBalanceBefore = address(registry).balance;
 
@@ -360,13 +345,9 @@ contract NatecinVaultTest is Test {
         uint256 heirBalanceAfter = heir.balance;
         uint256 registryBalanceAfter = address(registry).balance;
 
-        // Verify heir received ETH (minus fees)
         assertGt(heirBalanceAfter, heirBalanceBefore);
-
-        // Verify registry received NFT fees
         assertGt(registryBalanceAfter, registryBalanceBefore);
 
-        // Verify NFT ownership transfer
         assertEq(nft.ownerOf(1), heir);
         assertEq(nft.ownerOf(2), heir);
 
@@ -374,16 +355,19 @@ contract NatecinVaultTest is Test {
     }
 
     function test_FeeTopUp() public {
-        // Create vault with NFTs
         uint256 estimatedNFTs = 1;
         uint256 requiredFee = factory.calculateMinNFTFee(estimatedNFTs);
 
+        address[] memory heirs = new address[](1);
+        uint256[] memory percentages = new uint256[](1);
+        heirs[0] = heir;
+        percentages[0] = 10000;
+
         vm.prank(owner);
-        address nftVault = factory.createVault{value: 1 ether + requiredFee}(heir, INACTIVITY_PERIOD, estimatedNFTs);
+        address nftVault = factory.createVault{value: 1 ether + requiredFee}(heirs, percentages, INACTIVITY_PERIOD, estimatedNFTs);
 
         NatecinVault vaultWithNFT = NatecinVault(payable(nftVault));
 
-        // Top up fee deposit
         uint256 topUpAmount = 0.005 ether;
         vm.prank(owner);
         vm.deal(owner, topUpAmount);
@@ -400,12 +384,11 @@ contract NatecinVaultTest is Test {
         address[] memory manyHeirs = new address[](11);
         uint256[] memory percentages = new uint256[](11);
         
-        // Initialize arrays with 11 heirs (more than allowed)
         for (uint i = 0; i < 11; i++) {
             manyHeirs[i] = makeAddr(string(abi.encodePacked("heir", i)));
-            percentages[i] = 909; // ~9.09% each
+            percentages[i] = 909;
         }
-        percentages[10] = 901; // Make total 100%
+        percentages[10] = 901;
 
         vm.prank(owner);
         vm.expectRevert(abi.encodeWithSelector(NatecinVault.TooManyHeirs.selector));
@@ -417,7 +400,7 @@ contract NatecinVaultTest is Test {
         uint256[] memory percentages = new uint256[](2);
         
         duplicateHeirs[0] = heir;
-        duplicateHeirs[1] = heir; // Same heir twice
+        duplicateHeirs[1] = heir;
         percentages[0] = 5000;
         percentages[1] = 5000;
 
@@ -427,26 +410,21 @@ contract NatecinVaultTest is Test {
     }
 
     function test_Revert_CannotWithdrawWithNFTs() public {
-        // Top up fee deposit first
         vm.prank(owner);
         vault.topUpFeeDeposit{value: 0.01 ether}();
         
-        // Deposit an NFT
         vm.prank(owner);
         nft.safeTransferFrom(owner, address(vault), 1);
 
-        // Try to withdraw fee deposit - should fail because vault has NFTs
         vm.prank(owner);
         vm.expectRevert(abi.encodeWithSelector(NatecinVault.CannotWithdrawWithNFTs.selector));
         vault.withdrawFeeDeposit();
     }
 
     function test_EmergencyWithdraw_WithAssets() public {
-        // Deposit some ETH first
         vm.prank(owner);
         vault.depositETH{value: 1 ether}();
         
-        // Emergency withdraw should work
         vm.prank(owner);
         vault.emergencyWithdraw();
         
@@ -472,7 +450,6 @@ contract NatecinVaultTest is Test {
     }
 
     function test_Revert_AlreadyInitialized() public {
-        // Try to initialize the same vault again
         address[] memory heirs = new address[](1);
         uint256[] memory percentages = new uint256[](1);
         heirs[0] = heir;
@@ -483,5 +460,77 @@ contract NatecinVaultTest is Test {
         vault.initialize(owner, heirs, percentages, INACTIVITY_PERIOD, address(registry), 0);
     }
 
+    function test_Distribute_ETH_MultiHeir_Split() public {
+        address[] memory newHeirs = new address[](2);
+        newHeirs[0] = heir;
+        newHeirs[1] = heir2;
+        uint256[] memory percentages = new uint256[](2);
+        percentages[0] = 6000;
+        percentages[1] = 4000;
 
+        vm.prank(owner);
+        vault.setHeirs(newHeirs, percentages);
+
+        vm.warp(block.timestamp + INACTIVITY_PERIOD + 1);
+
+        uint256 vaultBal = address(vault).balance;
+        uint256 fee = (vaultBal * 20) / 10000;
+        uint256 distributable = vaultBal - fee;
+
+        uint256 expectedHeir1 = (distributable * 6000) / 10000;
+        uint256 expectedHeir2 = (distributable * 4000) / 10000;
+
+        uint256 h1Start = heir.balance;
+        uint256 h2Start = heir2.balance;
+
+        vault.distributeAssets();
+
+        assertEq(heir.balance, h1Start + expectedHeir1);
+        assertEq(heir2.balance, h2Start + expectedHeir2);
+    }
+
+    function test_WithdrawETH_Standard() public {
+        uint256 amount = 1 ether;
+        vm.prank(owner);
+        vault.depositETH{value: amount}();
+
+        uint256 ownerStart = owner.balance;
+        
+        vm.prank(owner);
+        vault.withdrawETH(payable(owner), amount);
+
+        assertEq(owner.balance, ownerStart + amount);
+        assertFalse(vault.executed());
+    }
+
+    function test_WithdrawERC20_Standard() public {
+        uint256 amount = 50 ether;
+        vm.startPrank(owner);
+        token.approve(address(vault), amount);
+        vault.depositERC20(address(token), amount);
+        vm.stopPrank();
+
+        uint256 ownerStart = token.balanceOf(owner);
+
+        vm.prank(owner);
+        vault.withdrawERC20(address(token), owner, amount);
+
+        assertEq(token.balanceOf(owner), ownerStart + amount);
+    }
+
+    function test_WithdrawFeeDeposit_Success() public {
+        uint256 topUp = 0.01 ether;
+        vm.prank(owner);
+        vault.topUpFeeDeposit{value: topUp}();
+
+        assertFalse(vault.hasNonFungibleAssets());
+
+        uint256 ownerStart = owner.balance;
+
+        vm.prank(owner);
+        vault.withdrawFeeDeposit();
+
+        assertEq(owner.balance, ownerStart + topUp);
+        assertEq(vault.feeDeposit(), 0);
+    }
 }
