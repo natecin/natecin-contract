@@ -25,7 +25,7 @@ contract NatecinFactory is Ownable {
     address public vaultRegistry;
 
     // Fee configuration - percentage based
-    uint256 public creationFeePercent = 40; // 0.4% = 40 basis points (out of 10000)
+    uint256 public creationFeePercent = 20; // 0.2% = 20 basis points (out of 10000)
     uint256 public constant MAX_CREATION_FEE_PERCENT = 200; // Max 2%
     address public feeCollector;
 
@@ -157,69 +157,7 @@ contract NatecinFactory is Ownable {
         vaultRegistry = _registry;
     }
 
-    // ============ VAULT CREATION (OPTIMIZED) ============
-
-    /**
-     * @notice Create a new NATECIN vault (backward compatibility)
-     * @param heir Address of the heir
-     * @param inactivityPeriod Inactivity period in seconds
-     * @return vault Address of the created vault
-     */
-    function createVault(address heir, uint256 inactivityPeriod) external payable returns (address vault) {
-        if (heir == address(0)) revert ZeroAddress();
-
-        // Sanity check: 1 day min, 10 years max
-        if (inactivityPeriod < 1 days || inactivityPeriod > 3650 days) {
-            revert InvalidPeriod();
-        }
-
-        // For backward compatibility, no NFT fee required
-        uint256 minNFTFeeRequired = 0;
-        uint256 creationFee = calculateCreationFee(msg.value);
-
-        // Total required: creation fee + minimum NFT fee (if expecting NFTs)
-        uint256 totalFeesRequired = creationFee + minNFTFeeRequired;
-
-        if (msg.value <= totalFeesRequired) revert InsufficientValue();
-
-        // Create Clone
-        bytes32 salt = keccak256(abi.encodePacked(msg.sender, allVaults.length));
-        vault = implementation.cloneDeterministic(salt);
-
-        if (vault == address(0)) revert VaultCreationFailed();
-
-        // Calculate amounts
-        uint256 nftFeeDeposit = 0;
-        uint256 regularDeposit = msg.value - creationFee - nftFeeDeposit;
-
-        // For backward compatibility, create single heir with 100% allocation
-        address[] memory heirs = new address[](1);
-        uint256[] memory percentages = new uint256[](1);
-        heirs[0] = heir;
-        percentages[0] = 10000; // 100%
-
-        // Initialize the Clone
-        NatecinVault(payable(vault)).initialize{value: msg.value - creationFee}(
-            msg.sender, heirs, percentages, inactivityPeriod, vaultRegistry, nftFeeDeposit
-        );
-
-        // Track the vault
-        allVaults.push(vault);
-        vaultsByOwner[msg.sender].push(vault);
-        vaultsByHeir[heir].push(vault);
-        isVault[vault] = true;
-
-        emit VaultCreated(vault, msg.sender, heirs, percentages, inactivityPeriod, block.timestamp, regularDeposit, creationFee);
-
-        // Auto-register with Registry (if set)
-        if (vaultRegistry != address(0)) {
-            IVaultRegistry(vaultRegistry).registerVault(vault);
-            emit VaultRegistered(vault, vaultRegistry);
-        }
-
-        return vault;
-    }
-
+    // ============ VAULT CREATION ============
     /**
      * @notice Create a new NATECIN vault with multiple heirs
      * @param _heirs Array of heir addresses
@@ -246,7 +184,7 @@ contract NatecinFactory is Ownable {
         if (_heirs.length == 0) revert ZeroAddress();
 
         // Sanity check: 1 day min, 10 years max
-        if (inactivityPeriod < 1 days || inactivityPeriod > 3650 days) {
+        if (inactivityPeriod < 1 hours || inactivityPeriod > 3650 days) {
             revert InvalidPeriod();
         }
 
@@ -294,27 +232,6 @@ contract NatecinFactory is Ownable {
         }
 
         return vault;
-    }
-
-    /**
-     * @notice Create a new NATECIN vault with single heir
-     * @param heir Address of the heir
-     * @param inactivityPeriod Inactivity period in seconds
-     * @param estimatedNFTCount Estimated number of NFTs user plans to store
-     * @return vault Address of the created vault
-     */
-    function createVault(address heir, uint256 inactivityPeriod, uint256 estimatedNFTCount)
-        external
-        payable
-        returns (address vault)
-    {
-        // Convert to multi-heir format for internal consistency
-        address[] memory heirs = new address[](1);
-        uint256[] memory percentages = new uint256[](1);
-        heirs[0] = heir;
-        percentages[0] = 10000; // 100%
-        
-        return _createVaultMulti(heirs, percentages, inactivityPeriod, estimatedNFTCount);
     }
 
     // ============ VIEW FUNCTIONS ============
