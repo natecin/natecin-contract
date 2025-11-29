@@ -36,7 +36,7 @@ contract NatecinVault is IERC721Receiver, IERC1155Receiver, ReentrancyGuard {
     uint256 public feeRequired; // Minimum fee required based on NFT count
     bool public hasNonFungibleAssets; // Track if vault contains NFTs
 
-    uint256 public constant MIN_INACTIVITY_PERIOD = 1 seconds;
+    uint256 public constant MIN_INACTIVITY_PERIOD = 1 hours;
     uint256 public constant MAX_INACTIVITY_PERIOD = 10 * 365 days;
 
     // ============ ASSET TRACKING ============
